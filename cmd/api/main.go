@@ -2,17 +2,23 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"os/signal"
 	"payment-service/internal/config"
+	"time"
 	httpPaymentHandler "payment-service/internal/http"
 	"payment-service/internal/kafka"
 	"payment-service/internal/repository"
 	"payment-service/internal/service"
+	"payment-service/internal/tracing"
 	"syscall"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/golang-migrate/migrate/v4"
+	_ "github.com/golang-migrate/migrate/v4/database/postgres"
+	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/jmoiron/sqlx"
 )
@@ -24,6 +30,26 @@ func main() {
 		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	}
 
+	tp, err := tracing.Init("payment-service")
+	if err != nil {
+		slog.Error("failed to init tracing", "err", err)
+		os.Exit(1)
+	}
+	defer tp.Shutdown(context.Background())
+
+	m, err := migrate.New("file://"+cfg.MigrationsDir, cfg.DBUrl)
+	if err != nil {
+		slog.Error("failed to init migrations", "err", err)
+		os.Exit(1)
+	}
+
+	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		slog.Error("failed to run migrations", "err", err)
+		os.Exit(1)
+	}
+
+	slog.Info("migrations applied")
+
 	db, err := sqlx.Connect("pgx", cfg.DBUrl)
 	if err != nil {
 		slog.Error("failed to connect to database", "err", err)
@@ -31,22 +57,31 @@ func main() {
 	}
 
 	producer := kafka.NewProducer(cfg.KafkaBrokers)
-	repository := repository.NewPaymentRepo(db)
-	svc := service.NewPaymentService(repository, producer)
+	paymentRepo := repository.NewPaymentRepo(db)
+	outboxRepo := repository.NewOutboxRepo(db)
+	svc := service.NewPaymentService(paymentRepo)
 	handler := httpPaymentHandler.NewHttpPaymentHandler(svc)
-	consumer, err := kafka.NewConsumer(cfg.KafkaBrokers, svc)
+	consumer, err := kafka.NewConsumer(cfg.KafkaBrokers, svc, producer)
 
 	if err != nil {
 		slog.Error("failed to create kafka consumer", "err", err)
 		os.Exit(1)
 	}
 
+	outboxPublisher := kafka.NewOutboxPublisher(outboxRepo, producer, 2*time.Second)
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	go consumer.Start(ctx)
+	go outboxPublisher.Start(ctx)
 
 	app := fiber.New()
+
+	app.Use(httpPaymentHandler.Recover())
+	app.Use(httpPaymentHandler.RequestID())
+	app.Use(httpPaymentHandler.Tracing())
+	app.Use(httpPaymentHandler.Logger())
 
 	app.Get("/payments/:user_id", handler.GetPayments)
 	app.Get("/payment/:id", handler.GetPayment)
@@ -62,7 +97,12 @@ func main() {
 	<-ctx.Done()
 	slog.Info("shutting down...")
 
-	if err := app.Shutdown(); err != nil {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := app.ShutdownWithContext(shutdownCtx); err != nil {
 		slog.Error("http shutdown error", "err", err)
 	}
+
+	db.Close()
 }

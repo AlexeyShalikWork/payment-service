@@ -2,6 +2,8 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 
 	"payment-service/internal/model"
 
@@ -18,12 +20,35 @@ func NewPaymentRepo(db *sqlx.DB) *PaymentRepo {
 }
 
 func (r *PaymentRepo) Create(ctx context.Context, p *model.Payment) error {
-	query := `
-        INSERT INTO payments (id, user_id, type, amount, currency, status)
-        VALUES (:id, :user_id, :type, :amount, :currency, :status)
-    `
-	_, err := r.db.NamedExecContext(ctx, query, p)
-	return err
+	tx, err := r.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	_, err = tx.NamedExecContext(ctx, `
+		INSERT INTO payments (id, user_id, type, amount, currency, status)
+		VALUES (:id, :user_id, :type, :amount, :currency, :status)
+		ON CONFLICT (id) DO NOTHING
+	`, p)
+	if err != nil {
+		return fmt.Errorf("insert payment: %w", err)
+	}
+
+	payload, err := json.Marshal(p)
+	if err != nil {
+		return fmt.Errorf("marshal outbox payload: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO outbox (topic, event_type, payload)
+		VALUES ($1, $2, $3)
+	`, "PaymentService", "payment.created", payload)
+	if err != nil {
+		return fmt.Errorf("insert outbox: %w", err)
+	}
+
+	return tx.Commit()
 }
 
 func (r *PaymentRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status model.PaymentStatus) error {
@@ -33,17 +58,16 @@ func (r *PaymentRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status mod
 	return err
 }
 
-func (r *PaymentRepo) Get(ctx context.Context, user_id uuid.UUID) (*[]model.Payment, error) {
+func (r *PaymentRepo) Get(ctx context.Context, userID uuid.UUID) (*[]model.Payment, error) {
 	var payments []model.Payment
 
 	query := `
-        SELECT id, user_id, type, amount, currency, status, created_at
+		SELECT id, user_id, type, amount, currency, status, created_at
 		FROM payments
 		WHERE user_id=$1
-    `
+	`
 
-	err := r.db.SelectContext(ctx, &payments, query, user_id)
-
+	err := r.db.SelectContext(ctx, &payments, query, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -54,12 +78,11 @@ func (r *PaymentRepo) GetById(ctx context.Context, id uuid.UUID) (*model.Payment
 	var payment model.Payment
 
 	query := `
-        SELECT id, user_id, type, amount, currency, status, created_at
+		SELECT id, user_id, type, amount, currency, status, created_at
 		FROM payments
 		WHERE id=$1
-    `
+	`
 	err := r.db.GetContext(ctx, &payment, query, id)
-
 	if err != nil {
 		return nil, err
 	}

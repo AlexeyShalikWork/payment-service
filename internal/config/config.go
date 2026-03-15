@@ -6,10 +6,11 @@ import (
 )
 
 type Config struct {
-	DBUrl      string
-	KafkaBrokers []string
-	HTTPPort   string
-	LogFormat  string
+	DBUrl         string
+	KafkaBrokers  []string
+	HTTPPort      string
+	LogFormat     string
+	MigrationsDir string
 }
 
 func Load() *Config {
@@ -17,7 +18,8 @@ func Load() *Config {
 		DBUrl:        getEnv("DB_URL", "postgres://localhost:5432/payments"),
 		KafkaBrokers: strings.Split(getEnv("KAFKA_BROKERS", "localhost:9092"), ","),
 		HTTPPort:     getEnv("HTTP_PORT", "3005"),
-		LogFormat:    getEnv("LOG_FORMAT", "text"),
+		LogFormat:      getEnv("LOG_FORMAT", "text"),
+		MigrationsDir:  getEnv("MIGRATIONS_DIR", "migrations"),
 	}
 }
 

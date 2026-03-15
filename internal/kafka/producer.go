@@ -25,6 +25,26 @@ func NewProducer(brokers []string) *Producer {
 	return &Producer{client: client}
 }
 
+func (p *Producer) PublishToDLQ(ctx context.Context, originalRecord []byte, errMsg string) error {
+	msgCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	record := &kgo.Record{
+		Topic: "PaymentService.dlq",
+		Value: originalRecord,
+		Headers: []kgo.RecordHeader{
+			{Key: "error", Value: []byte(errMsg)},
+		},
+	}
+
+	if err := p.client.ProduceSync(msgCtx, record).FirstErr(); err != nil {
+		slog.Error("failed to publish to DLQ", "err", err)
+		return err
+	}
+
+	return nil
+}
+
 func (p *Producer) PublishPaymentCreated(ctx context.Context, payment *model.Payment) error {
 	envelope := map[string]any{
 		"eventType": "payment.created",
