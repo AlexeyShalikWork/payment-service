@@ -1,0 +1,22 @@
+# Скомпилированный бинарник — внутри Docker мы компилируем заново
+api
+
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+
+# Docker (не нужен внутри контейнера)
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# Kubernetes манифесты
+k8s/
+
+# Документация
+README.md

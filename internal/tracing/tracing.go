@@ -2,6 +2,7 @@ package tracing
 
 import (
 	"fmt"
+	"io"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
@@ -13,7 +14,7 @@ import (
 )
 
 func Init(serviceName string) (*sdktrace.TracerProvider, error) {
-	exporter, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
+	exporter, err := stdouttrace.New(stdouttrace.WithPrettyPrint(), stdouttrace.WithWriter(io.Discard))
 	if err != nil {
 		return nil, fmt.Errorf("create stdout exporter: %w", err)
 	}

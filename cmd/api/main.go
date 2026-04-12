@@ -83,6 +83,12 @@ func main() {
 	app.Use(httpPaymentHandler.Tracing())
 	app.Use(httpPaymentHandler.Logger())
 
+	// Health check — используется Kubernetes для liveness/readiness probes.
+	// Возвращает 200 OK, если процесс жив и способен обрабатывать HTTP.
+	app.Get("/payment/health", func(c fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
 	app.Get("/payments/:user_id", handler.GetPayments)
 	app.Get("/payment/:id", handler.GetPayment)
 
