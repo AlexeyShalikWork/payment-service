@@ -11,6 +11,7 @@ type Config struct {
 	HTTPPort      string
 	LogFormat     string
 	MigrationsDir string
+	ElasticURL    string
 }
 
 func Load() *Config {
@@ -20,6 +21,7 @@ func Load() *Config {
 		HTTPPort:     getEnv("HTTP_PORT", "3005"),
 		LogFormat:      getEnv("LOG_FORMAT", "text"),
 		MigrationsDir:  getEnv("MIGRATIONS_DIR", "migrations"),
+		ElasticURL:     getEnv("ELASTIC_URL", ""),
 	}
 }
 

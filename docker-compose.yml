@@ -37,11 +37,58 @@ services:
       HTTP_PORT: ${HTTP_PORT}
       LOG_FORMAT: ${LOG_FORMAT}
       MIGRATIONS_DIR: ${MIGRATIONS_DIR}
+      ELASTIC_URL: ${ELASTIC_URL}
     ports:
       - "3005:3005"
     depends_on:
       - postgres
       - kafka
 
+  prometheus:
+    image: prom/prometheus:v3.4.0
+    container_name: payment-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    container_name: payment-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  elasticsearch:
+    image: elasticsearch:8.18.0
+    container_name: payment-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms256m -Xmx256m
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+
+  kibana:
+    image: kibana:8.18.0
+    container_name: payment-kibana
+    ports:
+      - "5601:5601"
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    depends_on:
+      - elasticsearch
+
 volumes:
   pgdata:
+  prometheus_data:
+  grafana_data:
+  es_data:

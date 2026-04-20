@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"payment-service/internal/repository"
 	"time"
@@ -48,7 +49,16 @@ func (p *OutboxPublisher) publishBatch(ctx context.Context) {
 	}
 
 	for _, entry := range entries {
-		value := []byte(`{"eventType":"` + entry.EventType + `","payload":` + string(entry.Payload) + `}`)
+		envelope := map[string]any{
+			"eventType": entry.EventType,
+			"payload":   json.RawMessage(entry.Payload),
+		}
+
+		value, err := json.Marshal(envelope)
+		if err != nil {
+			slog.Error("outbox: failed to marshal", "err", err, "outbox_id", entry.ID)
+			continue
+		}
 
 		record := &kgo.Record{
 			Topic: entry.Topic,
@@ -58,7 +68,7 @@ func (p *OutboxPublisher) publishBatch(ctx context.Context) {
 		InjectTraceContext(ctx, record)
 
 		msgCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		err := p.producer.client.ProduceSync(msgCtx, record).FirstErr()
+		err = p.producer.client.ProduceSync(msgCtx, record).FirstErr()
 		cancel()
 
 		if err != nil {

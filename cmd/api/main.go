@@ -7,9 +7,11 @@ import (
 	"os"
 	"os/signal"
 	"payment-service/internal/config"
+	"sync"
 	"time"
 	httpPaymentHandler "payment-service/internal/http"
 	"payment-service/internal/kafka"
+	"payment-service/internal/logging"
 	"payment-service/internal/repository"
 	"payment-service/internal/service"
 	"payment-service/internal/tracing"
@@ -26,8 +28,22 @@ import (
 func main() {
 	cfg := config.Load()
 
+	var consoleHandler slog.Handler
 	if cfg.LogFormat == "json" {
-		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+		consoleHandler = slog.NewJSONHandler(os.Stdout, nil)
+	} else {
+		consoleHandler = slog.NewTextHandler(os.Stdout, nil)
+	}
+
+	if cfg.ElasticURL != "" {
+		esHandler, err := logging.NewElasticHandler([]string{cfg.ElasticURL}, "payment-logs")
+		if err != nil {
+			slog.Error("failed to init elasticsearch logging", "err", err)
+		} else {
+			slog.SetDefault(slog.New(logging.NewMultiHandler(consoleHandler, esHandler)))
+		}
+	} else {
+		slog.SetDefault(slog.New(consoleHandler))
 	}
 
 	tp, err := tracing.Init("payment-service")
@@ -55,8 +71,14 @@ func main() {
 		slog.Error("failed to connect to database", "err", err)
 		os.Exit(1)
 	}
+	defer db.Close()
 
-	producer := kafka.NewProducer(cfg.KafkaBrokers)
+	producer, err := kafka.NewProducer(cfg.KafkaBrokers)
+	if err != nil {
+		slog.Error("failed to create kafka producer", "err", err)
+		os.Exit(1)
+	}
+
 	paymentRepo := repository.NewPaymentRepo(db)
 	outboxRepo := repository.NewOutboxRepo(db)
 	svc := service.NewPaymentService(paymentRepo)
@@ -73,8 +95,17 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	go consumer.Start(ctx)
-	go outboxPublisher.Start(ctx)
+	var wg sync.WaitGroup
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		consumer.Start(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		outboxPublisher.Start(ctx)
+	}()
 
 	app := fiber.New()
 
@@ -82,12 +113,15 @@ func main() {
 	app.Use(httpPaymentHandler.RequestID())
 	app.Use(httpPaymentHandler.Tracing())
 	app.Use(httpPaymentHandler.Logger())
+	app.Use(httpPaymentHandler.Metrics())
 
 	// Health check — используется Kubernetes для liveness/readiness probes.
 	// Возвращает 200 OK, если процесс жив и способен обрабатывать HTTP.
 	app.Get("/payment/health", func(c fiber.Ctx) error {
 		return c.SendString("ok")
 	})
+
+	app.Get("/metrics", httpPaymentHandler.MetricsHandler())
 
 	app.Get("/payments/:user_id", handler.GetPayments)
 	app.Get("/payment/:id", handler.GetPayment)
@@ -110,5 +144,6 @@ func main() {
 		slog.Error("http shutdown error", "err", err)
 	}
 
-	db.Close()
+	wg.Wait()
+	slog.Info("all workers stopped")
 }

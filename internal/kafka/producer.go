@@ -3,6 +3,7 @@ package kafka
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"payment-service/internal/model"
 	"time"
@@ -14,15 +15,15 @@ type Producer struct {
 	client *kgo.Client
 }
 
-func NewProducer(brokers []string) *Producer {
+func NewProducer(brokers []string) (*Producer, error) {
 	client, err := kgo.NewClient(
 		kgo.SeedBrokers(brokers...),
 	)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("create kafka producer: %w", err)
 	}
 
-	return &Producer{client: client}
+	return &Producer{client: client}, nil
 }
 
 func (p *Producer) PublishToDLQ(ctx context.Context, originalRecord []byte, errMsg string) error {
@@ -56,7 +57,7 @@ func (p *Producer) PublishPaymentCreated(ctx context.Context, payment *model.Pay
 		return err
 	}
 
-	msgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	msgCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	record := &kgo.Record{
